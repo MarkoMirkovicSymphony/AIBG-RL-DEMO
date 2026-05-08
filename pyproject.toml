@@ -1,0 +1,12 @@
+[project]
+name = "aibg-rl-demo"
+version = "0.1.0"
+description = "Reinforcement Learning examples — from tabular Q-learning to Deep RL"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "gymnasium[box2d]",
+    "torch",
+    "matplotlib",
+]
