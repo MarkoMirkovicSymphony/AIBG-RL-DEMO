@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-CHECKPOINTS_DIR = "code/checkpoints"
+CHECKPOINTS_DIR = "results/checkpoints_lunar_lander"
 
 
 class QNetwork(nn.Module):
@@ -346,7 +346,7 @@ def plot_rewards(rewards, window=50):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("code/dqn_lunar_lander_rewards.png", dpi=150)
+    plt.savefig("results/dqn_lunar_lander_rewards.png", dpi=150)
     plt.show()
 
 

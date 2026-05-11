@@ -1,7 +1,7 @@
 """
 Replay saved DQN checkpoints to visualize agent progression.
 
-Loads models from code/checkpoints/ and plays episodes with rendering
+Loads models from results/checkpoints_lunar_lander/ and plays episodes with rendering
 so you can see how the agent improves over training.
 """
 

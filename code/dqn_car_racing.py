@@ -29,7 +29,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 
-CHECKPOINTS_DIR = "code/checkpoints_car_racing"
+CHECKPOINTS_DIR = "results/checkpoints_car_racing"
 
 # Discretized action space: (steering, gas, brake)
 # CarRacing's continuous actions: steering [-1, 1], gas [0, 1], brake [0, 1]
@@ -419,7 +419,7 @@ def plot_rewards(rewards, window=20):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("code/dqn_car_racing_rewards.png", dpi=150)
+    plt.savefig("results/dqn_car_racing_rewards.png", dpi=150)
     plt.show()
 
 

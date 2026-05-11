@@ -19,7 +19,7 @@ import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
 
-CHECKPOINTS_DIR = "code/checkpoints_q_learning"
+CHECKPOINTS_DIR = "results/checkpoints_q_learning"
 
 
 def create_environment(slippery=True):
@@ -148,7 +148,7 @@ def plot_rewards(rewards, window=100):
     plt.title("Q-Learning on FrozenLake — Training Progress")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("code/q_learning_rewards.png", dpi=150)
+    plt.savefig("results/q_learning_rewards.png", dpi=150)
     plt.show()
 
 
