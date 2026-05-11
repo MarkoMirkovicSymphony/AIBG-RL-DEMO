@@ -265,6 +265,75 @@ def evaluate(agent, episodes=10, render=True):
     return total_rewards
 
 
+def demo(checkpoint_path=None, episodes=5):
+    """
+    Watch the trained agent play with rendering.
+    Loops episodes until you hit Ctrl+C or it finishes the requested number.
+
+    Args:
+        checkpoint_path: path to a .pth file (defaults to best.pth)
+        episodes: how many episodes to play (set high and Ctrl+C to stop whenever)
+    """
+    if checkpoint_path is None:
+        checkpoint_path = os.path.join(CHECKPOINTS_DIR, "best.pth")
+
+    if not os.path.exists(checkpoint_path):
+        print(f"No checkpoint found at: {checkpoint_path}")
+        print("Train the model first, or pass a valid checkpoint path.")
+        return
+
+    device = torch.device(
+        "mps" if torch.backends.mps.is_available()
+        else "cuda" if torch.cuda.is_available()
+        else "cpu"
+    )
+
+    env = gym.make("LunarLander-v3")
+    state_size = env.observation_space.shape[0]
+    action_size = env.action_space.n
+    env.close()
+
+    # Load the trained model
+    agent = DQNAgent(state_size, action_size)
+    agent.policy_net.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    agent.policy_net.eval()
+    agent.epsilon = 0.0
+
+    print(f"Loaded checkpoint: {checkpoint_path}")
+    print(f"Device: {device}")
+    print(f"Playing {episodes} episodes. Press Ctrl+C to stop early.\n")
+
+    env = gym.make("LunarLander-v3", render_mode="human")
+
+    try:
+        ep = 0
+        while True:
+            ep += 1
+            state, _ = env.reset()
+            total_reward = 0
+            steps = 0
+            done = False
+
+            while not done:
+                action = agent.select_action(state)
+                state, reward, terminated, truncated, _ = env.step(action)
+                done = terminated or truncated
+                total_reward += reward
+                steps += 1
+
+            # LunarLander: reward > 200 is considered solved, negative means crash
+            print(f"  Episode {ep}: reward = {total_reward:.2f} | steps = {steps}")
+            if total_reward < 0:
+                print("\nAgent crashed. Stopping.")
+                break
+
+    except KeyboardInterrupt:
+        print("\n\nStopped by user.")
+
+    env.close()
+    print("Done.")
+
+
 def plot_rewards(rewards, window=50):
     smoothed = np.convolve(rewards, np.ones(window) / window, mode="valid")
     plt.figure(figsize=(10, 5))
@@ -282,14 +351,27 @@ def plot_rewards(rewards, window=50):
 
 
 if __name__ == "__main__":
-    print("Training DQN agent on LunarLander-v3...")
-    print(f"Device: {torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')}")
-    print("-" * 50)
+    import argparse
 
-    agent, rewards = train(episodes=1000)
+    parser = argparse.ArgumentParser(description="DQN on LunarLander-v3")
+    parser.add_argument("--mode", choices=["train", "demo"], default="train",
+                        help="train: train from scratch | demo: watch a trained model play")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to checkpoint .pth file (for demo mode)")
+    parser.add_argument("--episodes", type=int, default=1000,
+                        help="Number of episodes (training or demo)")
+    args = parser.parse_args()
 
-    plot_rewards(rewards)
+    if args.mode == "demo":
+        demo(checkpoint_path=args.checkpoint, episodes=args.episodes)
+    else:
+        print("Training DQN agent on LunarLander-v3...")
+        print(f"Device: {torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')}")
+        print("-" * 50)
 
-    print("\nEvaluating trained agent...")
-    agent.epsilon = 0.0  # disable exploration for evaluation
-    evaluate(agent, episodes=10, render=False)
+        agent, rewards = train(episodes=args.episodes)
+        plot_rewards(rewards)
+
+        print("\nEvaluating trained agent...")
+        agent.epsilon = 0.0
+        evaluate(agent, episodes=10, render=False)

@@ -14,21 +14,26 @@ KEY RL CONCEPTS:
 - Q-value: expected total future reward for taking action A in state S
 """
 
+import os
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
 
+CHECKPOINTS_DIR = "code/checkpoints_q_learning"
 
-def create_environment():
+
+def create_environment(slippery=True):
     # FrozenLake is a 4x4 grid:
     #   S = Start, F = Frozen (safe), H = Hole (game over), G = Goal
     #   The agent must navigate from S to G without falling in holes.
-    #   is_slippery=False makes it deterministic (actions always go where intended)
-    env = gym.make("FrozenLake-v1", map_name="4x4", is_slippery=False)
+    #   is_slippery=True makes it STOCHASTIC: when you pick a direction,
+    #   there's only 1/3 chance you go there — 1/3 you slip left, 1/3 you slip right.
+    #   This makes it much harder: even the optimal policy only wins ~70-80% of the time.
+    env = gym.make("FrozenLake-v1", map_name="4x4", is_slippery=slippery)
     return env
 
 
-def train(env, episodes=2000, alpha=0.1, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995):
+def train(env, episodes=20000, alpha=0.8, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.9995, checkpoint_every=2000):
     """
     Train the agent using Q-Learning.
 
@@ -37,6 +42,8 @@ def train(env, episodes=2000, alpha=0.1, gamma=0.99, epsilon_start=1.0, epsilon_
     - gamma (discount factor): how much the agent cares about future vs immediate rewards (0.99 = very forward-looking)
     - epsilon: probability of taking a random action (exploration vs exploitation)
     """
+    os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
+
     n_states = env.observation_space.n   # 16 states (4x4 grid)
     n_actions = env.action_space.n       # 4 actions (left, down, right, up)
 
@@ -83,6 +90,14 @@ def train(env, episodes=2000, alpha=0.1, gamma=0.99, epsilon_start=1.0, epsilon_
         # Decay epsilon: explore less over time as we learn more
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
         rewards_per_episode.append(total_reward)
+
+        # Save periodic checkpoints
+        if (episode + 1) % checkpoint_every == 0:
+            path = os.path.join(CHECKPOINTS_DIR, f"episode_{episode + 1}.npy")
+            np.save(path, q_table)
+            print(f"  [Checkpoint saved: {path}]")
+
+    np.save(os.path.join(CHECKPOINTS_DIR, "final.npy"), q_table)
 
     return q_table, rewards_per_episode
 
@@ -137,16 +152,87 @@ def plot_rewards(rewards, window=100):
     plt.show()
 
 
-if __name__ == "__main__":
-    env = create_environment()
+def demo(checkpoint_path=None, episodes=5, slippery=True):
+    """
+    Watch the trained agent navigate the grid with rendering.
+    Loops episodes until you hit Ctrl+C or it finishes the requested number.
 
-    print("Training Q-Learning agent on FrozenLake (4x4, deterministic)...")
-    q_table, rewards = train(env, episodes=2000)
+    Args:
+        checkpoint_path: path to a .npy Q-table file (defaults to final.npy)
+        episodes: how many episodes to play (set high and Ctrl+C to stop whenever)
+    """
+    if checkpoint_path is None:
+        checkpoint_path = os.path.join(CHECKPOINTS_DIR, "final.npy")
 
-    win_rate = evaluate(env, q_table)
-    print(f"\nEvaluation win rate: {win_rate * 100:.1f}%")
+    if not os.path.exists(checkpoint_path):
+        print(f"No checkpoint found at: {checkpoint_path}")
+        print("Train the model first, or pass a valid checkpoint path.")
+        return
 
-    print_policy(q_table)
-    plot_rewards(rewards)
+    q_table = np.load(checkpoint_path)
+
+    print(f"Loaded checkpoint: {checkpoint_path}")
+    print(f"Playing {episodes} episodes. Press Ctrl+C to stop early.\n")
+
+    env = gym.make("FrozenLake-v1", map_name="4x4", is_slippery=slippery, render_mode="human")
+
+    try:
+        ep = 0
+        while True:
+            ep += 1
+            state, _ = env.reset()
+            steps = 0
+            done = False
+
+            while not done:
+                action = np.argmax(q_table[state])
+                state, reward, terminated, truncated, _ = env.step(action)
+                done = terminated or truncated
+                steps += 1
+
+            if reward == 1.0:
+                print(f"  Episode {ep}: WON | steps = {steps}")
+            else:
+                print(f"  Episode {ep}: FELL IN HOLE | steps = {steps}")
+                print("\nAgent failed. Stopping.")
+                break
+
+    except KeyboardInterrupt:
+        print("\n\nStopped by user.")
 
     env.close()
+    print("Done.")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Q-Learning on FrozenLake")
+    parser.add_argument("--mode", choices=["train", "demo"], default="train",
+                        help="train: train from scratch | demo: watch a trained model play")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to checkpoint .npy file (for demo mode)")
+    parser.add_argument("--episodes", type=int, default=20000,
+                        help="Number of episodes (training or demo)")
+    parser.add_argument("--slippery", action="store_true", default=True,
+                        help="Enable slippery ice (default: on)")
+    parser.add_argument("--no-slippery", dest="slippery", action="store_false",
+                        help="Disable slippery ice (deterministic movement)")
+    args = parser.parse_args()
+
+    if args.mode == "demo":
+        demo(checkpoint_path=args.checkpoint, episodes=args.episodes, slippery=args.slippery)
+    else:
+        env = create_environment(slippery=args.slippery)
+
+        mode_str = "slippery" if args.slippery else "deterministic"
+        print(f"Training Q-Learning agent on FrozenLake (4x4, {mode_str})...")
+        q_table, rewards = train(env, episodes=args.episodes)
+
+        win_rate = evaluate(env, q_table)
+        print(f"\nEvaluation win rate: {win_rate * 100:.1f}%")
+
+        print_policy(q_table)
+        plot_rewards(rewards)
+
+        env.close()
