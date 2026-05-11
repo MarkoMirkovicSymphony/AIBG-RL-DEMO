@@ -8,7 +8,7 @@ KEY DIFFERENCES FROM LUNARLANDER:
 - Observation is an image (96x96x3 RGB) instead of a vector of 8 numbers.
   We preprocess it: grayscale, crop, resize, and stack 4 frames for motion info.
 - Action space is continuous (steering, gas, brake) but we DISCRETIZE it into
-  5 simple actions so DQN can still work (DQN only handles discrete actions).
+  simple actions so DQN can still work (DQN only handles discrete actions).
 - Uses a CNN (convolutional neural network) instead of a feedforward net,
   because the input is now an image — CNNs are designed to extract spatial features.
 
@@ -16,6 +16,14 @@ WHY STACK FRAMES?
 A single frame doesn't tell you velocity or direction of movement.
 By stacking 4 consecutive frames, the network can infer motion — like
 how a flipbook shows movement through sequential images.
+
+TUNING NOTES (what makes this work vs. a naive DQN):
+1. Buffer warmup: collect 5000 random experiences before learning starts
+2. Learn every 4 steps, not every step — reduces correlation between updates
+3. Soft target updates (slowly blend target network) instead of hard copy every N episodes
+4. Action repeat: hold each action for 4 frames — speeds up training and gives
+   more meaningful state transitions (single frames change too little)
+5. Huber loss instead of MSE — less sensitive to outlier rewards
 """
 
 import os
@@ -35,13 +43,17 @@ CHECKPOINTS_DIR = "results/checkpoints_car_racing"
 # CarRacing's continuous actions: steering [-1, 1], gas [0, 1], brake [0, 1]
 DISCRETE_ACTIONS = [
     np.array([0.0, 0.0, 0.0]),    # 0: do nothing
-    np.array([-1.0, 0.0, 0.0]),   # 1: turn left
-    np.array([1.0, 0.0, 0.0]),    # 2: turn right
-    np.array([0.0, 1.0, 0.0]),    # 3: gas
-    np.array([0.0, 0.0, 0.8]),    # 4: brake
-    np.array([-1.0, 1.0, 0.0]),   # 5: turn left + gas
-    np.array([1.0, 1.0, 0.0]),    # 6: turn right + gas
+    np.array([-0.6, 0.0, 0.0]),   # 1: turn left
+    np.array([0.6, 0.0, 0.0]),    # 2: turn right
+    np.array([0.0, 0.8, 0.0]),    # 3: gas
+    np.array([0.0, 0.0, 0.6]),    # 4: brake
+    np.array([-0.4, 0.5, 0.0]),   # 5: turn left + gas
+    np.array([0.4, 0.5, 0.0]),    # 6: turn right + gas
     np.array([0.0, 0.3, 0.0]),    # 7: gentle gas (useful for curves)
+    np.array([-0.3, 0.3, 0.0]),   # 8: gentle left + gentle gas
+    np.array([0.3, 0.3, 0.0]),    # 9: gentle right + gentle gas
+    np.array([-0.6, 0.0, 0.3]),   # 10: turn left + brake
+    np.array([0.6, 0.0, 0.3]),    # 11: turn right + brake
 ]
 
 
@@ -54,11 +66,8 @@ def preprocess_frame(frame):
     - Crop bottom: removes the score bar which is irrelevant
     - Normalize to [0, 1]: helps neural network training converge faster
     """
-    # Crop the bottom 12 pixels (score bar)
     frame = frame[:84, 6:90]
-    # Convert to grayscale: weighted sum matching human perception
     gray = np.dot(frame[..., :3], [0.2989, 0.5870, 0.1140])
-    # Normalize to [0, 1]
     gray = gray / 255.0
     return gray.astype(np.float32)
 
@@ -87,7 +96,6 @@ class FrameStack:
         return self._get_state()
 
     def _get_state(self):
-        # Stack frames along a new axis: shape becomes (4, 84, 84)
         return np.array(self.frames)
 
 
@@ -96,7 +104,7 @@ class QNetworkCNN(nn.Module):
     Convolutional neural network that approximates Q(state, action).
 
     Input: 4 stacked grayscale frames (4, 84, 84)
-    Output: Q-value for each discrete action (8 actions)
+    Output: Q-value for each discrete action
 
     Architecture: 3 conv layers (extract spatial features) + 2 fully connected layers.
     This is similar to the original DeepMind Atari DQN architecture.
@@ -111,7 +119,6 @@ class QNetworkCNN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, stride=1),        # (64, 9, 9) -> (64, 7, 7)
             nn.ReLU(),
         )
-        # Calculate flattened size after convolutions
         self.fc = nn.Sequential(
             nn.Linear(64 * 7 * 7, 512),
             nn.ReLU(),
@@ -120,7 +127,7 @@ class QNetworkCNN(nn.Module):
 
     def forward(self, x):
         x = self.conv(x)
-        x = x.view(x.size(0), -1)  # flatten: (batch, 64, 7, 7) -> (batch, 3136)
+        x = x.view(x.size(0), -1)
         return self.fc(x)
 
 
@@ -158,13 +165,15 @@ class DQNAgent:
         self,
         n_frames=4,
         action_size=len(DISCRETE_ACTIONS),
-        lr=1e-4,             # lower learning rate for CNN (more parameters to tune carefully)
-        gamma=0.99,          # discount factor: how much we value future rewards
-        epsilon_start=1.0,   # start fully random (100% exploration)
-        epsilon_end=0.05,    # end with 5% randomness
-        epsilon_decay=0.999, # slower decay — CarRacing needs more exploration
-        batch_size=64,       # how many experiences to learn from at once
-        target_update_freq=10,  # update target network every N episodes
+        lr=5e-5,
+        gamma=0.99,
+        epsilon_start=1.0,
+        epsilon_end=0.05,
+        epsilon_decay=0.999,
+        batch_size=128,
+        tau=0.005,           # soft target update rate (blend target net slowly)
+        learn_every=4,       # only do a gradient step every N env steps
+        buffer_warmup=5000,  # collect this many random experiences before learning
     ):
         self.device = torch.device(
             "mps" if torch.backends.mps.is_available()
@@ -177,12 +186,12 @@ class DQNAgent:
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
-        self.target_update_freq = target_update_freq
+        self.tau = tau
+        self.learn_every = learn_every
+        self.buffer_warmup = buffer_warmup
+        self.steps_done = 0
 
-        # POLICY NETWORK: the network we actively train — makes decisions
         self.policy_net = QNetworkCNN(n_frames, action_size).to(self.device)
-
-        # TARGET NETWORK: a frozen copy used to calculate "what should Q be?"
         self.target_net = QNetworkCNN(n_frames, action_size).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
@@ -201,7 +210,11 @@ class DQNAgent:
 
     def learn(self):
         """Sample a batch from replay buffer and do one gradient update."""
-        if len(self.buffer) < self.batch_size:
+        self.steps_done += 1
+
+        if len(self.buffer) < self.buffer_warmup:
+            return None
+        if self.steps_done % self.learn_every != 0:
             return None
 
         states, actions, rewards, next_states, dones = self.buffer.sample(self.batch_size)
@@ -212,43 +225,51 @@ class DQNAgent:
         next_states = torch.FloatTensor(next_states).to(self.device)
         dones = torch.FloatTensor(dones).to(self.device)
 
-        # CURRENT Q-VALUES: what our policy network thinks Q(s,a) is
         current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # TARGET Q-VALUES: reward + gamma * max(Q_target(next_state))
         with torch.no_grad():
             next_q = self.target_net(next_states).max(dim=1)[0]
             target_q = rewards + self.gamma * next_q * (1 - dones)
 
-        loss = nn.MSELoss()(current_q, target_q)
+        # Huber loss: like MSE but less sensitive to outlier rewards
+        loss = nn.SmoothL1Loss()(current_q, target_q)
 
         self.optimizer.zero_grad()
         loss.backward()
-        # Gradient clipping: prevents exploding gradients with image inputs
         nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=10)
         self.optimizer.step()
 
-        return loss.item()
+        # Soft target update: slowly blend target net toward policy net
+        # This is smoother than copying weights every N episodes
+        for target_param, policy_param in zip(self.target_net.parameters(), self.policy_net.parameters()):
+            target_param.data.copy_(self.tau * policy_param.data + (1.0 - self.tau) * target_param.data)
 
-    def update_target(self):
-        """Copy policy network weights into the target network."""
-        self.target_net.load_state_dict(self.policy_net.state_dict())
+        return loss.item()
 
     def decay_epsilon(self):
         """Reduce exploration rate over time."""
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
 
-def train(episodes=1000, checkpoint_every=200):
+def train(episodes=1500, checkpoint_every=200, resume_from=None):
     os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
 
-    env = gym.make("CarRacing-v3", continuous=False if False else True)
-    # We handle discretization ourselves since we want custom action combos
+    env = gym.make("CarRacing-v3")
     agent = DQNAgent()
     frame_stack = FrameStack(n_frames=4)
 
+    start_episode = 0
     rewards_history = []
     best_avg_reward = -float("inf")
+    action_repeat = 4  # hold each action for this many frames
+
+    # Resume from checkpoint: load weights and set epsilon low since we're past exploration
+    if resume_from is not None:
+        agent.policy_net.load_state_dict(torch.load(resume_from, map_location=agent.device))
+        agent.target_net.load_state_dict(agent.policy_net.state_dict())
+        agent.epsilon = 0.1  # mostly exploit, but still explore a bit to improve
+        print(f"Resumed from: {resume_from}")
+        print(f"Epsilon set to: {agent.epsilon}")
 
     for episode in range(episodes):
         obs, _ = env.reset()
@@ -261,33 +282,34 @@ def train(episodes=1000, checkpoint_every=200):
             action_idx = agent.select_action(state)
             action = DISCRETE_ACTIONS[action_idx]
 
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
+            # Action repeat: take the same action for multiple frames
+            # Single frames change too little — this gives more meaningful transitions
+            repeat_reward = 0
+            for _ in range(action_repeat):
+                next_obs, reward, terminated, truncated, _ = env.step(action)
+                repeat_reward += reward
+                done = terminated or truncated
+                if done:
+                    break
 
-            # Early stopping if the car is stuck (getting negative rewards for too long)
-            if reward < 0:
+            if repeat_reward < 0:
                 negative_reward_count += 1
             else:
                 negative_reward_count = 0
-            if negative_reward_count > 100:
+            if negative_reward_count > 50:
                 done = True
 
             next_state = frame_stack.step(next_obs)
 
-            agent.buffer.push(state, action_idx, reward, next_state, done)
+            agent.buffer.push(state, action_idx, repeat_reward, next_state, done)
             agent.learn()
 
             state = next_state
-            total_reward += reward
+            total_reward += repeat_reward
 
         agent.decay_epsilon()
-
-        if (episode + 1) % agent.target_update_freq == 0:
-            agent.update_target()
-
         rewards_history.append(total_reward)
 
-        # Save periodic checkpoints
         if (episode + 1) % checkpoint_every == 0:
             path = os.path.join(CHECKPOINTS_DIR, f"episode_{episode + 1}.pth")
             torch.save(agent.policy_net.state_dict(), path)
@@ -298,7 +320,8 @@ def train(episodes=1000, checkpoint_every=200):
             print(
                 f"Episode {episode + 1:4d} | "
                 f"Avg Reward: {avg_reward:7.2f} | "
-                f"Epsilon: {agent.epsilon:.3f}"
+                f"Epsilon: {agent.epsilon:.3f} | "
+                f"Buffer: {len(agent.buffer):6d}"
             )
 
             if avg_reward > best_avg_reward:
@@ -342,11 +365,11 @@ def evaluate(agent, episodes=10, render=True):
 def demo(checkpoint_path=None, episodes=5):
     """
     Watch the trained agent drive with rendering.
-    Loops episodes until you hit Ctrl+C or it finishes the requested number.
+    Loops until the agent fails or you hit Ctrl+C.
 
     Args:
         checkpoint_path: path to a .pth file (defaults to best.pth)
-        episodes: how many episodes to play (set high and Ctrl+C to stop whenever)
+        episodes: ignored, loops until failure or Ctrl+C
     """
     if checkpoint_path is None:
         checkpoint_path = os.path.join(CHECKPOINTS_DIR, "best.pth")
@@ -362,15 +385,14 @@ def demo(checkpoint_path=None, episodes=5):
         else "cpu"
     )
 
-    # Load the trained model
     agent = DQNAgent()
     agent.policy_net.load_state_dict(torch.load(checkpoint_path, map_location=device))
     agent.policy_net.eval()
-    agent.epsilon = 0.0  # no exploration — pure exploitation
+    agent.epsilon = 0.0
 
     print(f"Loaded checkpoint: {checkpoint_path}")
     print(f"Device: {device}")
-    print(f"Playing {episodes} episodes. Press Ctrl+C to stop early.\n")
+    print("Playing until failure. Press Ctrl+C to stop early.\n")
 
     env = gym.make("CarRacing-v3", render_mode="human")
     frame_stack = FrameStack(n_frames=4)
@@ -394,7 +416,6 @@ def demo(checkpoint_path=None, episodes=5):
                 total_reward += reward
                 steps += 1
 
-            # CarRacing: negative total reward means the car went off-track / failed
             print(f"  Episode {ep}: reward = {total_reward:.2f} | steps = {steps}")
             if total_reward < 0:
                 print("\nAgent failed. Stopping.")
@@ -430,9 +451,11 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["train", "demo"], default="train",
                         help="train: train from scratch | demo: watch a trained model play")
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Path to checkpoint .pth file (for demo mode)")
-    parser.add_argument("--episodes", type=int, default=1000,
+                        help="Path to checkpoint .pth file (for demo or resume)")
+    parser.add_argument("--episodes", type=int, default=1500,
                         help="Number of episodes (training or demo)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training from --checkpoint (default: best.pth)")
     args = parser.parse_args()
 
     if args.mode == "demo":
@@ -442,7 +465,11 @@ if __name__ == "__main__":
         print(f"Device: {torch.device('mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu')}")
         print("-" * 50)
 
-        agent, rewards = train(episodes=args.episodes)
+        resume_path = None
+        if args.resume:
+            resume_path = args.checkpoint or os.path.join(CHECKPOINTS_DIR, "best.pth")
+
+        agent, rewards = train(episodes=args.episodes, resume_from=resume_path)
         plot_rewards(rewards)
 
         print("\nEvaluating trained agent...")
