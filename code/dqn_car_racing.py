@@ -27,6 +27,7 @@ TUNING NOTES (what makes this work vs. a naive DQN):
 """
 
 import os
+import json
 import random
 from collections import deque
 
@@ -251,6 +252,27 @@ class DQNAgent:
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
 
+def _save_training_state(rewards_history, best_avg_reward):
+    """Save rewards history and best reward so training can be resumed without loss."""
+    state = {
+        "rewards_history": rewards_history,
+        "best_avg_reward": best_avg_reward,
+        "total_episodes": len(rewards_history),
+    }
+    path = os.path.join(CHECKPOINTS_DIR, "training_state.json")
+    with open(path, "w") as f:
+        json.dump(state, f)
+
+
+def _load_training_state():
+    """Load previous training state if it exists."""
+    path = os.path.join(CHECKPOINTS_DIR, "training_state.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return None
+
+
 def train(episodes=1500, checkpoint_every=200, resume_from=None):
     os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
 
@@ -263,15 +285,24 @@ def train(episodes=1500, checkpoint_every=200, resume_from=None):
     best_avg_reward = -float("inf")
     action_repeat = 4  # hold each action for this many frames
 
-    # Resume from checkpoint: load weights and set epsilon low since we're past exploration
+    # Resume from checkpoint: load weights, history, and best reward
     if resume_from is not None:
         agent.policy_net.load_state_dict(torch.load(resume_from, map_location=agent.device))
         agent.target_net.load_state_dict(agent.policy_net.state_dict())
         agent.epsilon = 0.1  # mostly exploit, but still explore a bit to improve
-        print(f"Resumed from: {resume_from}")
-        print(f"Epsilon set to: {agent.epsilon}")
 
-    for episode in range(episodes):
+        saved_state = _load_training_state()
+        if saved_state is not None:
+            rewards_history = saved_state["rewards_history"]
+            best_avg_reward = saved_state["best_avg_reward"]
+            start_episode = saved_state["total_episodes"]
+
+        print(f"Resumed from: {resume_from}")
+        print(f"Continuing from episode: {start_episode}")
+        print(f"Epsilon set to: {agent.epsilon}")
+        print(f"Best avg reward so far: {best_avg_reward:.2f}")
+
+    for episode in range(start_episode, start_episode + episodes):
         obs, _ = env.reset()
         state = frame_stack.reset(obs)
         total_reward = 0
@@ -329,6 +360,7 @@ def train(episodes=1500, checkpoint_every=200, resume_from=None):
                 torch.save(agent.policy_net.state_dict(), os.path.join(CHECKPOINTS_DIR, "best.pth"))
 
     torch.save(agent.policy_net.state_dict(), os.path.join(CHECKPOINTS_DIR, "final.pth"))
+    _save_training_state(rewards_history, best_avg_reward)
 
     env.close()
     return agent, rewards_history
@@ -440,8 +472,10 @@ def plot_rewards(rewards, window=20):
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("results/dqn_car_racing_rewards.png", dpi=150)
+    filename = f"results/dqn_car_racing_rewards_{len(rewards)}ep.png"
+    plt.savefig(filename, dpi=150)
     plt.show()
+    print(f"Plot saved: {filename}")
 
 
 if __name__ == "__main__":
