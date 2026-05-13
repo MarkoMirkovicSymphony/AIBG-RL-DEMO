@@ -344,6 +344,7 @@ def train(episodes=1500, checkpoint_every=200, resume_from=None):
         if (episode + 1) % checkpoint_every == 0:
             path = os.path.join(CHECKPOINTS_DIR, f"episode_{episode + 1}.pth")
             torch.save(agent.policy_net.state_dict(), path)
+            _save_training_state(rewards_history, best_avg_reward)
             print(f"  [Checkpoint saved: {path}]")
 
         if (episode + 1) % 10 == 0:
@@ -371,6 +372,7 @@ def evaluate(agent, episodes=10, render=True):
     env = gym.make("CarRacing-v3", render_mode="human" if render else None)
     frame_stack = FrameStack(n_frames=4)
     total_rewards = []
+    action_repeat = 4
 
     for ep in range(episodes):
         obs, _ = env.reset()
@@ -381,10 +383,15 @@ def evaluate(agent, episodes=10, render=True):
         while not done:
             action_idx = agent.select_action(state)
             action = DISCRETE_ACTIONS[action_idx]
-            obs, reward, terminated, truncated, _ = env.step(action)
+
+            for _ in range(action_repeat):
+                obs, reward, terminated, truncated, _ = env.step(action)
+                total_reward += reward
+                done = terminated or truncated
+                if done:
+                    break
+
             state = frame_stack.step(obs)
-            done = terminated or truncated
-            total_reward += reward
 
         total_rewards.append(total_reward)
         print(f"  Episode {ep + 1}: reward = {total_reward:.2f}")
@@ -442,10 +449,15 @@ def demo(checkpoint_path=None, episodes=5):
             while not done:
                 action_idx = agent.select_action(state)
                 action = DISCRETE_ACTIONS[action_idx]
-                obs, reward, terminated, truncated, _ = env.step(action)
+
+                for _ in range(4):
+                    obs, reward, terminated, truncated, _ = env.step(action)
+                    total_reward += reward
+                    done = terminated or truncated
+                    if done:
+                        break
+
                 state = frame_stack.step(obs)
-                done = terminated or truncated
-                total_reward += reward
                 steps += 1
 
             print(f"  Episode {ep}: reward = {total_reward:.2f} | steps = {steps}")
