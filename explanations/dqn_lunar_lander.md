@@ -1,4 +1,4 @@
-# DQN on LunarLander — Speaker Notes
+# DQN on LunarLander
 
 ## Why DQN? The Limitation of Q-Tables
 

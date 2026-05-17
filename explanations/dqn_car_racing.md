@@ -1,4 +1,4 @@
-# DQN on CarRacing — Speaker Notes
+# DQN on CarRacing
 
 ## Scaling Up — From Numbers to Pixels
 

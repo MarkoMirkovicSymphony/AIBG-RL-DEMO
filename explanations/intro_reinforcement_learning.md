@@ -1,4 +1,4 @@
-# Introduction to Reinforcement Learning — Speaker Notes
+# Introduction to Reinforcement Learning
 
 ## What is Reinforcement Learning?
 

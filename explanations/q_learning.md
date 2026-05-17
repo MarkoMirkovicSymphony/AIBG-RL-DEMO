@@ -1,4 +1,4 @@
-# Q-Learning on FrozenLake — Speaker Notes
+# Q-Learning on FrozenLake
 
 ## The Problem — FrozenLake
 
